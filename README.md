@@ -32,6 +32,8 @@ flowchart LR
 | Integration tests | 16 passed (HuggingFace and MLflow model sources) |
 | Load test (Locust, 10 users, 30 s, local CPU) | 0 failures · `/predict` p50 34 ms, p95 64 ms · `/predict/batch` (4 texts) p50 130 ms |
 | Image size | 11 GB → **1.8 GB** with CPU-only torch ([docs/IMAGE_SIZE.md](docs/IMAGE_SIZE.md)) |
+| CI/CD (run 37824933291) | lint ✓ · test ✓ · deepchecks ✓ · build → ECR `finbert-api:f325472-20261008190747` ✓ · approved deploy → `finbert-api:3` on `finbert-cluster`, task RUNNING / HEALTHY |
+| Live ECS check (2026-10-08) | `/health` → `{"status":"ok"}` · `/predict` 130 ms · `/predict/batch` OK · JSON logs in CloudWatch `/ecs/finbert-api` |
 
 ## Project layout
 

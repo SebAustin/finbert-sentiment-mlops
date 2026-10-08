@@ -10,7 +10,6 @@ export AWS_REGION="${AWS_REGION:-us-east-1}"
 export AWS_DEFAULT_REGION="$AWS_REGION"
 export AWS_PAGER=""
 
-APP_NAME="finbert-api"
 CLUSTER_NAME="finbert-cluster"
 SERVICE_NAME="finbert-api-service"
 
@@ -35,11 +34,6 @@ service_field() {
     --query "services[0].$1" --output text 2>/dev/null || true
 }
 
-latest_task_definition() {
-  aws ecs list-task-definitions --family-prefix "$APP_NAME" --status ACTIVE --sort DESC \
-    --max-items 1 --query 'taskDefinitionArns[0]' --output text 2>/dev/null || true
-}
-
 running_task_arn() {
   aws ecs list-tasks --cluster "$CLUSTER_NAME" --service-name "$SERVICE_NAME" \
     --desired-status RUNNING --query 'taskArns[0]' --output text 2>/dev/null || true
@@ -48,7 +42,7 @@ running_task_arn() {
 public_ip_for_task() {
   local task_arn="$1" eni_id
   eni_id="$(aws ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$task_arn" \
-    --query "tasks[0].attachments[?type=='ElasticNetworkInterface'].details[?name=='networkInterfaceId'].value | [0][0]" \
+    --query "tasks[0].attachments[?type=='ElasticNetworkInterface'].details[] | [?name=='networkInterfaceId'].value | [0]" \
     --output text 2>/dev/null || true)"
   if [[ -z "$eni_id" || "$eni_id" == "None" ]]; then
     return
@@ -66,7 +60,9 @@ show_status() {
   desired="$(service_field desiredCount)"
   running="$(service_field runningCount)"
   pending="$(service_field pendingCount)"
-  task_def="$(latest_task_definition)"
+  # The revision the service is running (not merely the latest registered).
+  task_def="$(service_field taskDefinition)"
+  task_def="${task_def##*/}"
 
   echo "Service        : $SERVICE_NAME ($status)"
   echo "Desired/Running: $desired / $running (pending: $pending)"

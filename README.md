@@ -29,7 +29,7 @@ flowchart LR
 | Evaluation on 1,629 held-out headlines | accuracy 0.638 · **f1_weighted 0.590** · precision 0.611 · recall 0.638 |
 | Promotion gate (`f1_threshold: 0.56`) | passed → alias `production` |
 | Drift gate (test set vs. 444 cleaned Bluesky posts) | Sentiment property drift **0.404** (< 0.5) · prediction drift **0.232** (< 0.6) |
-| Integration tests | 14 passed (HuggingFace and MLflow model sources) |
+| Integration tests | 16 passed (HuggingFace and MLflow model sources) |
 | Load test (Locust, 10 users, 30 s, local CPU) | 0 failures · `/predict` p50 34 ms, p95 64 ms · `/predict/batch` (4 texts) p50 130 ms |
 | Image size | 11 GB → **1.8 GB** with CPU-only torch ([docs/IMAGE_SIZE.md](docs/IMAGE_SIZE.md)) |
 
@@ -123,7 +123,20 @@ The AWS resources are created by `infra/setup_aws.sh` and removed by `infra/tear
   - KPI stats
 - **Deploy approval gate**: the `deploy` job targets the GitHub `production` environment, which has required reviewers.
 - **Drift rollback**: `scripts/drift_gate.sh`, `scripts/rollback.py` and `.github/workflows/rollback.yml` ([docs/ROLLBACK.md](docs/ROLLBACK.md)).
+- **Hardening from the review pass**:
+  - hard input limits (10k chars per text, 64 texts per batch)
+  - serialized inference
+  - refusal to serve a model whose labels aren't the patched sentiment labels
+  - ECS deployment circuit breaker with rollback
+  - torch installed only from the PyTorch index
 - **CPU-only production image**: `requirements-prod.txt` with `--no-cache-dir`, a non-root user, and the model baked in so the container runs offline. Measured 11 GB → 1.8 GB ([docs/IMAGE_SIZE.md](docs/IMAGE_SIZE.md)).
+
+## Known limitations
+
+- **Evaluation is optimistic.** `scripts/load_data.py` (provided by the starter, required by the rubric) uses a random stratified split. The model card says FinBERT was fine-tuned on this same dataset, and headlines from the same day and ticker share a market-based label. The 0.59 F1 is therefore not a true held-out score. A date-based split with deduplication would give an honest number and a better-grounded `f1_threshold`.
+- **ECS serves the image's model, not the registry alias.** Promotion and rollback govern MLflow-backed deployments (compose/local). ECS deploys are guarded by CI gates plus the ECS circuit breaker. See [docs/ROLLBACK.md](docs/ROLLBACK.md#scope-registry-rollback-vs-container-rollback).
+- **Prometheus/Grafana run in docker compose only.** The ECS task exposes `/metrics` but nothing scrapes it there. The CloudWatch logs (JSON lines) are the production signal.
+- The public demo API has **no authentication or TLS** and is open on port 80, as the course requires. See [SECURITY.md](SECURITY.md).
 
 ## Notes
 

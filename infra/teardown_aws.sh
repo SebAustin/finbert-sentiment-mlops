@@ -48,6 +48,7 @@ This will DELETE in region $AWS_REGION:
   - ECR repository $REPO_NAME (and ALL images)
 The IAM role is NOT deleted.
 EOF
+  [[ -t 0 ]] || die "No terminal for confirmation: re-run with --yes to delete non-interactively."
   local reply
   read -r -p "Type 'yes' to continue: " reply
   [[ "$reply" == "yes" ]] || die "Aborted."
@@ -154,6 +155,32 @@ delete_ecr_repo() {
   fi
 }
 
+# Source of truth: query every resource again instead of trusting the
+# per-step messages (a step can "skip" because a call failed, e.g. expired
+# credentials, while the resource and its cost are still there).
+verify_clean() {
+  log "Verifying teardown"
+  local leftovers=() status sg_id
+  status="$(service_status)"
+  [[ "$status" == "ACTIVE" || "$status" == "DRAINING" ]] && leftovers+=("ECS service $SERVICE_NAME ($status)")
+  status="$(aws ecs describe-clusters --clusters "$CLUSTER_NAME" \
+    --query 'clusters[0].status' --output text 2>/dev/null || true)"
+  [[ "$status" == "ACTIVE" ]] && leftovers+=("ECS cluster $CLUSTER_NAME")
+  sg_id="$(aws ec2 describe-security-groups --filters "Name=group-name,Values=$SG_NAME" \
+    --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)"
+  [[ -n "$sg_id" && "$sg_id" != "None" ]] && leftovers+=("security group $SG_NAME ($sg_id)")
+  aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1 \
+    && leftovers+=("ECR repository $REPO_NAME")
+
+  if ((${#leftovers[@]})); then
+    printf 'ERROR: still present after teardown:\n' >&2
+    printf '  - %s\n' "${leftovers[@]}" >&2
+    printf 'Re-run infra/teardown_aws.sh --yes in a few minutes.\n' >&2
+    exit 1
+  fi
+  info "no billable finbert resources remain"
+}
+
 main() {
   parse_args "$@"
   command -v aws >/dev/null 2>&1 || die "AWS CLI v2 is required but not found in PATH."
@@ -165,6 +192,7 @@ main() {
   delete_security_group
   delete_log_group
   delete_ecr_repo
+  verify_clean
   log "Teardown complete (IAM role left in place)"
 }
 

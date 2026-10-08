@@ -28,8 +28,12 @@ RUN useradd --create-home --uid 10001 appuser \
 WORKDIR /app
 
 # Dependencies first so code changes don't invalidate this layer.
+# CPU-only torch from the PyTorch index alone, then everything else from PyPI.
+ARG TORCH_VERSION=2.5.1
 COPY requirements-prod.txt ./
-RUN pip install --no-cache-dir -r requirements-prod.txt
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+      "torch==${TORCH_VERSION}" \
+ && pip install --no-cache-dir -r requirements-prod.txt
 
 USER appuser
 

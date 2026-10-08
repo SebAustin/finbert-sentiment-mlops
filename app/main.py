@@ -11,14 +11,16 @@ Endpoints:
 import json
 import logging
 import os
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import Annotated
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from utils import load_classifier
 
@@ -27,11 +29,20 @@ from utils import load_classifier
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("finbert-api")
 
-# Inputs longer than this are silently truncated by the 512-token model limit.
+# Inputs longer than this are truncated by the 512-token model limit (warned).
 MAX_TEXT_CHARS = 2000
+# Hard limit: longer inputs are rejected (422) — tokenising multi-MB strings
+# would pin the single vCPU before truncation even happens.
+MAX_INPUT_CHARS = 10_000
 # Upper bound on a single batch request to protect the CPU-only service.
 MAX_BATCH_SIZE = 64
 MODEL_MAX_TOKENS = 512
+EXPECTED_LABELS = {"positive", "negative", "neutral"}
+
+# HF pipelines are not guaranteed thread-safe and FastAPI runs sync endpoints
+# in a thread pool; on a 1-vCPU task serialising inference is also faster
+# than oversubscribing the CPU with concurrent torch calls.
+_inference_lock = threading.Lock()
 
 
 def log(level: str, message: str, **kwargs) -> None:
@@ -68,12 +79,15 @@ load_dotenv()
 classifiers = {}
 
 
+InputText = Annotated[str, Field(max_length=MAX_INPUT_CHARS)]
+
+
 class PredictRequest(BaseModel):
-    text: str
+    text: InputText
 
 
 class PredictBatchRequest(BaseModel):
-    texts: list[str]
+    texts: Annotated[list[InputText], Field(max_length=MAX_BATCH_SIZE)]
 
 
 class PredictionResult(BaseModel):
@@ -87,7 +101,9 @@ class PredictionResult(BaseModel):
 async def lifespan(app: FastAPI):
     log("INFO", "Loading model...", model_source=os.getenv("MODEL_SOURCE", "mlflow"))
     try:
-        classifiers["sentiment"] = load_classifier()
+        classifier = load_classifier()
+        check_labels(classifier)
+        classifiers["sentiment"] = classifier
     except Exception as e:
         # Keep the process up so /health reports 503 instead of crash-looping.
         log("ERROR", "Model failed to load", error=str(e))
@@ -101,6 +117,20 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Sentiment Analysis API", lifespan=lifespan)
 
 
+def check_labels(classifier) -> None:
+    """Refuse a model whose id2label isn't the patched sentiment labels.
+
+    An unpatched FinBERT config yields LABEL_0/1/2, which would otherwise be
+    served with HTTP 200 and silently break every downstream metric.
+    """
+    labels = {str(v).lower() for v in classifier.model.config.id2label.values()}
+    if labels != EXPECTED_LABELS:
+        raise ValueError(
+            f"Unexpected model labels {sorted(labels)}; expected "
+            f"{sorted(EXPECTED_LABELS)}. Run scripts/smoke_test.py to patch the config."
+        )
+
+
 def run_prediction(text: str | list[str]) -> tuple[list[dict], float]:
     """Run the model on a text (or a list of texts) and measure latency.
 
@@ -108,11 +138,12 @@ def run_prediction(text: str | list[str]) -> tuple[list[dict], float]:
     input text) and the wall-clock latency of the call in milliseconds.
     """
     texts = [text] if isinstance(text, str) else text
-    start = time.perf_counter()
-    outputs = classifiers["sentiment"](
-        texts, truncation=True, max_length=MODEL_MAX_TOKENS
-    )
-    latency_ms = (time.perf_counter() - start) * 1000
+    with _inference_lock:
+        start = time.perf_counter()
+        outputs = classifiers["sentiment"](
+            texts, truncation=True, max_length=MODEL_MAX_TOKENS
+        )
+        latency_ms = (time.perf_counter() - start) * 1000
     return outputs, latency_ms
 
 
@@ -190,11 +221,6 @@ def predict_batch(request: PredictBatchRequest):
     ensure_model_loaded()
     if not request.texts:
         raise HTTPException(status_code=422, detail="Texts list must not be empty")
-    if len(request.texts) > MAX_BATCH_SIZE:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Batch size exceeds the maximum of {MAX_BATCH_SIZE}",
-        )
     for text in request.texts:
         validate_text(text)
     return run_predictions(request.texts)

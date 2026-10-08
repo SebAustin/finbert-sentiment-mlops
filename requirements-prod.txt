@@ -1,9 +1,9 @@
 # Runtime-only dependencies for the production image (Dockerfile).
-# CPU-only PyTorch: the default PyPI wheel for linux/x86_64 pulls ~3 GB of
-# CUDA libraries the Fargate task can never use.
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.5.1+cpu ; platform_machine == "x86_64"
-torch==2.5.1 ; platform_machine != "x86_64"
+#
+# torch is NOT listed here: the Dockerfile installs torch==2.5.1 on its own
+# from the CPU-only PyTorch index (--index-url, never --extra-index-url, so no
+# other package can be resolved from a second index). The default PyPI wheel
+# for linux/x86_64 pulls ~3 GB of CUDA libraries Fargate can never use.
 
 numpy>=1.26,<2.0
 transformers>=4.40.2,<4.46

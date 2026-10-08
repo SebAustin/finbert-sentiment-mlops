@@ -9,7 +9,7 @@
 #   scripts/drift_gate.sh
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 export MODEL_SOURCE=mlflow
 export MODEL_STAGE=production
@@ -20,6 +20,13 @@ status=$?
 if [[ $status -eq 0 ]]; then
   echo "Drift gate passed: production model kept."
   exit 0
+fi
+
+# Exit 2 = drift detected. Anything else is an execution error (missing data,
+# MLflow down, OOM...) and must not touch the production alias.
+if [[ $status -ne 2 ]]; then
+  echo "Drift check errored (exit $status): NOT rolling back. Fix the error and re-run."
+  exit "$status"
 fi
 
 echo "Drift gate FAILED (exit $status): rolling back the production alias..."

@@ -26,7 +26,8 @@
         { "name": "MODEL_SOURCE", "value": "huggingface" },
         { "name": "API_HOST", "value": "0.0.0.0" },
         { "name": "API_PORT", "value": "80" },
-        { "name": "HF_HUB_OFFLINE", "value": "1" }
+        { "name": "HF_HUB_OFFLINE", "value": "1" },
+        { "name": "OMP_NUM_THREADS", "value": "1" }
       ],
       "systemControls": [
         { "namespace": "net.ipv4.ip_unprivileged_port_start", "value": "0" }

@@ -23,49 +23,76 @@ load_dotenv()
 PRODUCTION_ALIAS = "production"
 
 
-def find_previous_version(
-    client: MlflowClient, model_name: str, current: int
-) -> int | None:
-    """Return the highest registered version lower than `current`, if any."""
-    versions = [
-        int(v.version) for v in client.search_model_versions(f"name='{model_name}'")
+def get_production_version(client: MlflowClient, model_name: str):
+    """Return the version holding the production alias, or None if unset.
+
+    Any other MLflow error (server down, auth) propagates instead of being
+    reported as "no alias".
+    """
+    try:
+        return client.get_model_version_by_alias(model_name, PRODUCTION_ALIAS)
+    except MlflowException as e:
+        if e.error_code in ("RESOURCE_DOES_NOT_EXIST", "INVALID_PARAMETER_VALUE"):
+            return None
+        raise
+
+
+def find_rollback_target(client: MlflowClient, model_name: str, current) -> str | None:
+    """Version to restore: the one recorded by promote.py when `current` was
+    promoted; otherwise the newest older version that was never rolled back."""
+    recorded = (current.tags or {}).get("previous_production")
+    if recorded:
+        recorded_tags = client.get_model_version(model_name, recorded).tags or {}
+        if "rolled_back_at" not in recorded_tags:
+            return recorded
+    older = [
+        v
+        for v in client.search_model_versions(f"name='{model_name}'")
+        if int(v.version) < int(current.version)
+        and "rolled_back_at" not in (v.tags or {})
     ]
-    older = [v for v in versions if v < current]
-    return max(older) if older else None
+    return max(older, key=lambda v: int(v.version)).version if older else None
 
 
 def rollback(client: MlflowClient, model_name: str, reason: str, dry_run: bool) -> int:
-    try:
-        current = int(
-            client.get_model_version_by_alias(model_name, PRODUCTION_ALIAS).version
-        )
-    except MlflowException:
-        print(
-            f"[ERROR] Model '{model_name}' has no '{PRODUCTION_ALIAS}' alias to roll back."
-        )
+    current = get_production_version(client, model_name)
+    if current is None:
+        print(f"[ERROR] Model '{model_name}' has no '{PRODUCTION_ALIAS}' alias.")
         return 1
 
-    previous = find_previous_version(client, model_name, current)
-    if previous is None:
+    # Idempotency: a version restored by a previous rollback is not rolled
+    # back again by a re-run (that would walk the alias back one more step).
+    if "restored_at" in (current.tags or {}):
         print(
-            f"No version older than v{current} for '{model_name}': nothing to roll back to. "
-            f"'{PRODUCTION_ALIAS}' stays on v{current}."
+            f"'{PRODUCTION_ALIAS}' is v{current.version}, already restored by a "
+            f"previous rollback at {current.tags['restored_at']}. Nothing to do."
+        )
+        return 0
+
+    target = find_rollback_target(client, model_name, current)
+    if target is None:
+        print(
+            f"No earlier production version for '{model_name}': nothing to roll "
+            f"back to. '{PRODUCTION_ALIAS}' stays on v{current.version}."
         )
         return 1
 
     print(
-        f"Rolling back '{model_name}@{PRODUCTION_ALIAS}': v{current} -> v{previous} ({reason})"
+        f"Rolling back '{model_name}@{PRODUCTION_ALIAS}': "
+        f"v{current.version} -> v{target} ({reason})"
     )
     if dry_run:
         print("Dry run: alias not changed.")
         return 0
 
-    client.set_registered_model_alias(model_name, PRODUCTION_ALIAS, str(previous))
     timestamp = datetime.now(timezone.utc).isoformat()
-    client.set_model_version_tag(model_name, str(current), "rolled_back_at", timestamp)
-    client.set_model_version_tag(model_name, str(current), "rollback_reason", reason)
-    client.set_model_version_tag(model_name, str(previous), "restored_at", timestamp)
-    print(f"'{PRODUCTION_ALIAS}' now points to v{previous}.")
+    client.set_registered_model_alias(model_name, PRODUCTION_ALIAS, target)
+    client.set_model_version_tag(
+        model_name, current.version, "rolled_back_at", timestamp
+    )
+    client.set_model_version_tag(model_name, current.version, "rollback_reason", reason)
+    client.set_model_version_tag(model_name, target, "restored_at", timestamp)
+    print(f"'{PRODUCTION_ALIAS}' now points to v{target}.")
     return 0
 
 

@@ -20,6 +20,7 @@ import sys
 import mlflow
 import yaml
 from dotenv import load_dotenv
+from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 
 load_dotenv()
@@ -61,7 +62,16 @@ def get_latest_f1(client: MlflowClient, experiment_name: str) -> tuple[str, floa
     return latest.info.run_id, latest.data.metrics[F1_METRIC]
 
 
-def promote(client: MlflowClient, model_name: str) -> str:
+def current_production_version(client: MlflowClient, model_name: str) -> str | None:
+    try:
+        return client.get_model_version_by_alias(model_name, PRODUCTION_ALIAS).version
+    except MlflowException as e:
+        if e.error_code == "RESOURCE_DOES_NOT_EXIST" or "alias" in str(e).lower():
+            return None
+        raise
+
+
+def promote(client: MlflowClient, model_name: str, run_id: str | None = None) -> str:
     """Assign the production alias to the latest registered model version."""
     versions = client.search_model_versions(f"name='{model_name}'")
     if not versions:
@@ -69,6 +79,25 @@ def promote(client: MlflowClient, model_name: str) -> str:
 
     # get the latest version of the model
     latest = max(versions, key=lambda v: int(v.version))
+
+    # Safety: the F1 we checked must belong to the version we promote, and a
+    # version already rolled back for drift is never re-promoted silently.
+    if run_id and latest.run_id != run_id:
+        raise ValueError(
+            f"Latest version v{latest.version} comes from run {latest.run_id}, not "
+            f"from the evaluated run {run_id}. Re-run scripts/evaluate.py."
+        )
+    if "rolled_back_at" in (latest.tags or {}):
+        raise ValueError(
+            f"v{latest.version} was rolled back for drift "
+            f"({latest.tags['rollback_reason']}); register a new version instead."
+        )
+
+    previous = current_production_version(client, model_name)
+    if previous and previous != latest.version:
+        client.set_model_version_tag(
+            model_name, latest.version, "previous_production", previous
+        )
     client.set_registered_model_alias(model_name, PRODUCTION_ALIAS, latest.version)
     print(
         f"Promoted model '{model_name}' version {latest.version} "
@@ -103,7 +132,11 @@ def main():
         )
         return
 
-    version = promote(client, model_name)
+    try:
+        version = promote(client, model_name, run_id)
+    except ValueError as e:
+        print(f"[ERROR] Model NOT promoted: {e}")
+        sys.exit(1)
     client.set_model_version_tag(model_name, version, F1_METRIC, f"{f1:.4f}")
     client.set_model_version_tag(model_name, version, "promoted_from_run", run_id)
 

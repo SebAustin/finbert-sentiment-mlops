@@ -120,3 +120,23 @@ def test_prediction_error_increments_error_counter(client: TestClient, monkeypat
         client.post("/predict", json={"text": HEADLINES[0]})
 
     assert main.PREDICTION_ERRORS._value.get() == before + 1
+
+
+def test_predict_overlong_text_returns_422(client: TestClient):
+    response = client.post("/predict", json={"text": "a" * (main.MAX_INPUT_CHARS + 1)})
+
+    assert response.status_code == 422
+
+
+def test_check_labels_rejects_unpatched_model():
+    class Config:
+        id2label = {0: "LABEL_0", 1: "LABEL_1", 2: "LABEL_2"}
+
+    class Model:
+        config = Config()
+
+    class Classifier:
+        model = Model()
+
+    with pytest.raises(ValueError):
+        main.check_labels(Classifier())

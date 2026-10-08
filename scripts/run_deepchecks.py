@@ -26,8 +26,15 @@ def load_params() -> dict:
         return yaml.safe_load(f)["deepchecks"]
 
 
+# Exit codes: 0 = pass, 2 = drift above threshold. Any crash exits 1, so
+# callers (scripts/drift_gate.sh) can roll back on real drift only.
+EXIT_DRIFT = 2
 MODEL_CLASSES = ["negative", "neutral", "positive"]
 DRIFT_PROPERTIES = ["Sentiment", "Subjectivity", "Text Length"]
+
+
+def clean_texts(column: pd.Series) -> list[str]:
+    return [t for t in column.dropna().astype(str) if t.strip()]
 
 
 def run_predictions(classifier, texts: list[str]) -> list[str]:
@@ -47,8 +54,10 @@ def main():
     stream_df = pd.read_csv("data/stream.csv")
     test_df = pd.read_csv("data/test.csv")
 
-    stream_texts = stream_df["text"].tolist()
-    test_texts = test_df["text"].tolist()
+    stream_texts = clean_texts(stream_df["text"])
+    test_texts = clean_texts(test_df["text"])
+    if not stream_texts or not test_texts:
+        raise ValueError("data/stream.csv or data/test.csv has no usable text rows")
 
     # Reference = labelled test set; current = cleaned production stream.
     test_dataset = TextData(
@@ -107,7 +116,7 @@ def main():
     if failures:
         for failure in failures:
             print(f"[FAIL] {failure}")
-        sys.exit(1)
+        sys.exit(EXIT_DRIFT)
 
     print("[PASS] Drift checks within thresholds.")
 

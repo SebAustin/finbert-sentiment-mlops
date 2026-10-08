@@ -23,6 +23,7 @@ on:
   workflow_run:
     workflows: [test-and-deploy]
     types: [completed]
+    branches: [main]
 
 permissions:
   actions: read
@@ -53,9 +54,13 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          # Roll back only when the drift-gate step itself failed (exit 2 =
+          # drift). Install, DVC or model-download failures fail earlier steps
+          # of the same job and must not touch production.
           drift=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" \
-            --jq '.jobs[] | select(.name == "deepchecks") | .conclusion')
-          echo "deepchecks job conclusion: ${drift:-none}"
+            --jq '.jobs[] | select(.name == "deepchecks") | .steps[]
+                  | select(.name == "Run Deepchecks drift gate") | .conclusion')
+          echo "drift gate step conclusion: ${drift:-none}"
           if [[ "$drift" == "failure" ]]; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else

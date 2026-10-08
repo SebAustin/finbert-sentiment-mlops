@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
+      - run: pip install "ruff==0.16.10"
       - run: ruff check app/ scripts/ tests/
 
   test:
@@ -124,8 +124,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test, deepchecks]
     timeout-minutes: 30
+    # Only the tag crosses jobs: GitHub drops job outputs that contain a
+    # secret, and the registry comes from secrets.ECR_REGISTRY.
     outputs:
-      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -153,17 +155,22 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build the Docker image
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          LATEST: ${{ steps.meta.outputs.latest }}
         run: |
           docker build \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            -t "${{ steps.meta.outputs.image }}" \
-            -t "${{ steps.meta.outputs.latest }}" .
+            -t "$IMAGE" -t "$LATEST" .
 
       - name: Push the image to Amazon ECR
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          LATEST: ${{ steps.meta.outputs.latest }}
         run: |
-          docker push "${{ steps.meta.outputs.image }}"
-          docker push "${{ steps.meta.outputs.latest }}"
-          echo "Pushed ${{ steps.meta.outputs.image }}" >> "$GITHUB_STEP_SUMMARY"
+          docker push "$IMAGE"
+          docker push "$LATEST"
+          echo "Pushed $ECR_REPOSITORY:${{ steps.meta.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     runs-on: ubuntu-latest
@@ -194,7 +201,7 @@ jobs:
         with:
           task-definition: task-definition.json
           container-name: ${{ env.CONTAINER_NAME }}
-          image: ${{ needs.build.outputs.image }}
+          image: ${{ secrets.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ needs.build.outputs.tag }}
 
       - name: Deploy to Amazon ECS
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
@@ -208,4 +215,4 @@ jobs:
 
       - name: Summary
         run: |
-          echo "Deployed ${{ needs.build.outputs.image }} to $ECS_CLUSTER/$ECS_SERVICE" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployed $ECR_REPOSITORY:${{ needs.build.outputs.tag }} to $ECS_CLUSTER/$ECS_SERVICE" >> "$GITHUB_STEP_SUMMARY"

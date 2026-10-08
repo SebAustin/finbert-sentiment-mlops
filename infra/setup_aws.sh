@@ -23,6 +23,12 @@ TASK_DEF_TEMPLATE="$SCRIPT_DIR/task-definition.json"
 TAG_KEY="Project"
 TAG_VALUE="finbert-mlops"
 HEALTH_GRACE_SECONDS=180
+DEFAULT_SUBNET_AZS=("${AWS_REGION}a" "${AWS_REGION}b")
+EXEC_POLICY_ARN="arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+# One small task: stop the old one before starting the new (no 2x3 GB overlap).
+# The circuit breaker rolls back to the last working task definition when a
+# new revision never becomes healthy.
+DEPLOYMENT_CONFIG="minimumHealthyPercent=0,maximumPercent=100,deploymentCircuitBreaker={enable=true,rollback=true}"
 
 # Populated by the steps below.
 ACCOUNT_ID=""
@@ -73,6 +79,12 @@ ensure_ecr_repo() {
 }
 
 # --------------------------------------------------------------- c. network
+list_subnets() {
+  aws ec2 describe-subnets \
+    --filters "Name=vpc-id,Values=$VPC_ID" \
+    --query 'Subnets[].SubnetId' --output text | tr '\t' ','
+}
+
 discover_default_vpc() {
   log "Default VPC and subnets"
   VPC_ID="$(aws ec2 describe-vpcs \
@@ -83,9 +95,17 @@ discover_default_vpc() {
        'aws ec2 create-default-vpc' (if permitted) or use a region that has one."
   fi
 
-  SUBNET_IDS="$(aws ec2 describe-subnets \
-    --filters "Name=vpc-id,Values=$VPC_ID" \
-    --query 'Subnets[].SubnetId' --output text | tr '\t' ',')"
+  SUBNET_IDS="$(list_subnets)"
+  if [[ -z "$SUBNET_IDS" ]]; then
+    # Default subnets are free and public (routed through the default VPC's IGW).
+    info "default VPC has no subnets, creating default subnets in ${DEFAULT_SUBNET_AZS[*]}"
+    local az
+    for az in "${DEFAULT_SUBNET_AZS[@]}"; do
+      aws ec2 create-default-subnet --availability-zone "$az" >/dev/null \
+        || die "Could not create a default subnet in $az."
+    done
+    SUBNET_IDS="$(list_subnets)"
+  fi
   [[ -n "$SUBNET_IDS" ]] || die "Default VPC $VPC_ID has no subnets."
   info "VPC     : $VPC_ID"
   info "Subnets : $SUBNET_IDS"
@@ -161,10 +181,13 @@ create_execution_role() {
     die "Failed to create IAM role: $out"
   fi
 
-  aws iam attach-role-policy \
-    --role-name "$ROLE_NAME" \
-    --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-  info "created and attached AmazonECSTaskExecutionRolePolicy"
+  info "created"
+}
+
+attach_execution_policy() {
+  # Idempotent: re-running also repairs a role whose earlier attach failed.
+  aws iam attach-role-policy --role-name "$ROLE_NAME" --policy-arn "$EXEC_POLICY_ARN"
+  info "AmazonECSTaskExecutionRolePolicy attached"
 }
 
 ensure_execution_role() {
@@ -182,6 +205,7 @@ ensure_execution_role() {
       sleep 10
       EXEC_ROLE_ARN="$(aws iam get-role --role-name "$ROLE_NAME" --query Role.Arn --output text)"
     fi
+    attach_execution_policy
   fi
   info "Role ARN: $EXEC_ROLE_ARN"
 }
@@ -251,7 +275,10 @@ ensure_service() {
   local status
   status="$(service_status)"
   if [[ "$status" == "ACTIVE" || "$status" == "DRAINING" ]]; then
-    info "exists (status $status), leaving untouched"
+    # Keep the deployment settings current (idempotent; desired count untouched).
+    aws ecs update-service --cluster "$CLUSTER_NAME" --service "$SERVICE_NAME" \
+      --deployment-configuration "$DEPLOYMENT_CONFIG" >/dev/null
+    info "exists (status $status); deployment circuit breaker ensured"
     return
   fi
 
@@ -262,7 +289,7 @@ ensure_service() {
     --launch-type FARGATE \
     --desired-count 0 \
     --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_IDS],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" \
-    --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100" \
+    --deployment-configuration "$DEPLOYMENT_CONFIG" \
     --health-check-grace-period-seconds "$HEALTH_GRACE_SECONDS" \
     --tags "key=$TAG_KEY,value=$TAG_VALUE" >/dev/null
   info "created with desired-count 0 (CI/CD deploy job scales it to 1 once an image is in ECR)"

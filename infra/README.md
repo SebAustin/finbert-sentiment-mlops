@@ -55,3 +55,11 @@ If setup fails creating `ecsTaskExecutionRole` (AccessDenied in Cloud Lab), re-r
 
 Cloud Lab credentials are temporary. Each new lab session you must re-export them locally and refresh the
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` GitHub secrets before CI/CD can deploy.
+
+## Notes from the first real run (2026-10-08)
+
+- **Default VPC without subnets:** in some older accounts the default VPC has no subnets. `setup_aws.sh` then creates free default subnets in `<region>a` and `<region>b`. They are public and routed through the default VPC's internet gateway, so the task can pull from ECR.
+- **Deployment circuit breaker:** the service runs with `deploymentCircuitBreaker={enable=true,rollback=true}`. A revision that never becomes healthy is rolled back to the last healthy one automatically. Re-running `setup_aws.sh` also applies this to an existing service.
+- **Re-running setup** registers a new task-definition revision from `infra/task-definition.json`. The CI deploy job always starts from the latest registered revision and only swaps the image, so re-run setup after editing that file.
+- **Manual rollback** to an earlier revision:
+  `aws ecs update-service --cluster finbert-cluster --service finbert-api-service --task-definition finbert-api:<N>`

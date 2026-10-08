@@ -31,10 +31,12 @@ API_URL = os.getenv("API_URL") or (
     f"http://{os.getenv('API_HOST', 'localhost')}:{os.getenv('API_PORT', '8000')}"
 )
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
-MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "finbert-evaluation")
+MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME") or "finbert-evaluation"
 WINDOW_SIZE = 50  # number of predictions per observation window
-SLEEP_MS = 100    # delay between requests to simulate real traffic (ms)
+SLEEP_MS = 100  # delay between requests to simulate real traffic (ms)
 STREAM_PATH = os.path.join("data", "stream.csv")
+MAX_CONSECUTIVE_FAILURES = 10  # stop early when the API is unreachable
+RESULT_KEYS = {"sentiment", "confidence", "latency_ms"}
 
 
 def predict(text: str) -> dict:
@@ -44,7 +46,11 @@ def predict(text: str) -> dict:
         timeout=10,
     )
     response.raise_for_status()
-    return response.json()
+    result = response.json()
+    if not isinstance(result, dict) or not RESULT_KEYS <= result.keys():
+        raise ValueError(f"Unexpected /predict response: {result!r}")
+    return result
+
 
 SENTIMENTS = ("positive", "negative", "neutral")
 
@@ -90,6 +96,7 @@ def main():
     window: list[dict] = []
     window_idx = 0
     n_errors = 0
+    consecutive_errors = 0
 
     with mlflow.start_run(run_name="monitoring-stream"):
         mlflow.set_tag("stage", "monitoring")
@@ -105,9 +112,17 @@ def main():
         for text in headlines:
             try:
                 window.append(predict(text))
-            except requests.RequestException as e:
+                consecutive_errors = 0
+            except (requests.RequestException, ValueError) as e:
                 n_errors += 1
+                consecutive_errors += 1
                 print(f"[WARN] request failed ({n_errors} so far): {e}")
+                if consecutive_errors >= MAX_CONSECUTIVE_FAILURES:
+                    print(
+                        f"[ERROR] {consecutive_errors} consecutive failures: stopping."
+                    )
+                    mlflow.set_tag("status", "aborted_api_unreachable")
+                    break
 
             if len(window) == WINDOW_SIZE:
                 log_window(window, window_idx)

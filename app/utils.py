@@ -18,7 +18,7 @@ def load_classifier():
     model_source = os.getenv("MODEL_SOURCE", "mlflow")
 
     if model_source == "huggingface":
-        hf_model_id = os.getenv("HF_MODEL_ID", "baptle/FinBERT_market_based")
+        hf_model_id = os.getenv("HF_MODEL_ID") or "baptle/FinBERT_market_based"
         print(f"Loading model from HuggingFace: {hf_model_id}")
         return pipeline(
             "text-classification",
@@ -29,9 +29,10 @@ def load_classifier():
 
     import mlflow.transformers
 
-    model_name = os.getenv("MODEL_NAME", "finbert")
-    model_alias = os.getenv("MODEL_STAGE", "production")
-    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+    # `or` (not a getenv default) so empty values from .env fall back too.
+    model_name = os.getenv("MODEL_NAME") or "finbert"
+    model_alias = os.getenv("MODEL_STAGE") or "production"
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI") or "http://localhost:5000"
     print(f"Loading model from MLflow: models:/{model_name}@{model_alias}")
     mlflow.set_tracking_uri(tracking_uri)
     return mlflow.transformers.load_model(f"models:/{model_name}@{model_alias}")

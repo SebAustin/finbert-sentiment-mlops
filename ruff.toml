@@ -1,0 +1,11 @@
+# Project lint config — keeps local runs identical to the CI `lint` job
+# (overrides any user-level ruff configuration).
+target-version = "py312"
+line-length = 88
+
+[lint]
+select = ["E", "F", "W", "I", "B"]
+ignore = ["E501"]  # line length is left to the formatter
+
+[lint.isort]
+known-first-party = ["app", "utils"]

@@ -1,0 +1,33 @@
+# Task 1 — Two-stage data preparation pipeline.
+#
+#   prepare : downloads the financial headlines dataset from HuggingFace
+#             (HF_DATASET_ID, read from .env) and writes a stratified
+#             train/test split.
+#   clean   : cleans the raw Bluesky stream (URLs, mentions, emojis, length
+#             and finance-keyword filters) into data/stream.csv.
+#
+# Run: dvc repro
+# Docs: https://doc.dvc.org/user-guide/pipelines/defining-pipelines
+
+stages:
+  prepare:
+    cmd: python scripts/load_data.py
+    deps:
+      - scripts/load_data.py
+    params:
+      - prepare.test_size
+      - prepare.random_seed
+    outs:
+      - data/train.csv
+      - data/test.csv
+
+  clean:
+    cmd: python scripts/clean_data.py
+    deps:
+      - scripts/clean_data.py
+      - data/raw_stream.csv
+    params:
+      - clean.min_words
+      - clean.max_words
+    outs:
+      - data/stream.csv

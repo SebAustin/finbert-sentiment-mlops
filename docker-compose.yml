@@ -1,0 +1,24 @@
+# TODO (Task 4)
+# Define a docker-compose.yml that runs the FastAPI service with:
+# 1. Build section that defines how to create the Docker image for the service
+# 2. Port mapping 8000:8000
+# 3. Pass environment variables using the .env file
+# 4. Volume mounts for mlruns/ and mlartifacts/ so the API can reach the registered model
+# 5. A healthcheck on GET /health
+# 6. extra_hosts mapping so the container can reach the MLflow server running on the host machine
+#    (required on Linux where host.docker.internal is not resolved automatically)
+# Documentation: https://docs.docker.com/compose/compose-file/
+
+services:
+
+  api:
+    build: 
+    ports:
+
+    env_file:
+      
+    volumes:
+
+    extra_hosts:
+      
+    healthcheck:

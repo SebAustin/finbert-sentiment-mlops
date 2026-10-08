@@ -1,0 +1,98 @@
+# TODO (Task 5)
+# Complete this CI/CD pipeline by implementing the following jobs:
+# 1. test          — install dependencies and run pytest tests/ with MODEL_SOURCE=huggingface
+# 2. deepchecks    — install dependencies and run scripts/run_deepchecks.py with MODEL_SOURCE=huggingface
+#                    Both jobs must run in parallel after lint (needs: lint)
+# 3. build-and-push — build the Docker image, tag it with the commit SHA, log in to Amazon ECR,
+#                    and push both the SHA and latest tags (needs: test, deepchecks)
+# 4. deploy        — render the ECS task definition with the new image and deploy to ECS Fargate
+# Documentation: https://docs.github.com/en/actions/writing-workflows
+
+name: test-and-deploy
+
+on:
+  push:
+    branches: [main]
+
+# TODO (Task 5)
+# Before running this pipeline, make sure you have created the following AWS resources:
+# 1. An ECR repository named finbert-api to store your Docker images
+# 2. An ECS cluster named finbert-cluster
+# 3. An ECS service named finbert-api-service running on that cluster
+# 4. An ECS task definition named finbert-api
+# Also add AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
+# AWS_REGION, and ECR_REGISTRY as GitHub repository secrets.
+env:
+  ECR_REPOSITORY: finbert-api
+  TASK_DEFINITION: finbert-api
+  CONTAINER_NAME: finbert-api
+  ECS_SERVICE: finbert-api-service
+  ECS_CLUSTER: finbert-api
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check app/ scripts/ tests/
+
+  # TODO (Task 5) — test job
+  # Steps:
+  # - Checkout the code and setup Python (3.12)
+  # - Install dependencies
+  # - Run integration test using the HuggingFace model as MODEL_SOURCE
+  # Nice-to-have:
+  # - Cache pip dependencies to avoid re-installing on every run
+  # - Cache the HuggingFace model to avoid re-downloading on every run
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+
+
+  # TODO (Task 5) — deepchecks job
+  # Steps:
+  # - Checkout the code and setup Python (3.12)
+  # - Install dependencies
+  # - Generate data by running dvc repro (set HF_DATASET_ID env var)
+  # - Run deepchecks script using the HugginFace model as MODEL_ENV
+  # Nice-to-have:
+  # - Cache pip dependencies to avoid re-installing on every run
+  # - Cache the HuggingFace model to avoid re-downloading on every run
+  deepchecks:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+
+
+  # TODO (Task 5) — build job
+  # Steps:
+  # 1. Checkout the code
+  # 2. Configure AWS credentials using repository secrets
+  #    (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_REGION)
+  # 3. Log in to Amazon ECR
+  # 4. Build the Docker image
+  # 5. Tag it with a unique tag combining the short commit SHA and a timestamp
+  # 6. Push both the unique tag and the :latest tag to ECR
+  build:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    needs: [test, deepchecks]
+    steps:
+
+
+  # TODO (Task 5) — deploy job
+  # Steps:
+  # 1. Configure AWS credentials (same secrets as build job)
+  # 2. Download the current ECS task definition using the AWS CLI
+  # 3. Render a new task definition revision with the updated image URI
+  # 4. Deploy the new task definition to the ECS service and wait for stability
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+

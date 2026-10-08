@@ -1,0 +1,17 @@
+# Baseline ("before") image used only for the size comparison in
+# docs/IMAGE_SIZE.md: full requirements.txt with the default PyPI torch
+# (CUDA wheels), pip cache kept, compiler toolchain for fasttext.
+# Build from the project root:
+#   docker build --platform linux/amd64 -f docs/Dockerfile.baseline -t finbert-api:baseline .
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
+COPY scripts/smoke_test.py ./scripts/smoke_test.py
+RUN python -c "import sys; sys.path.insert(0, 'scripts'); \
+from smoke_test import check_model; check_model()"
+COPY app/ ./app/
+EXPOSE 8000
+CMD ["uvicorn", "main:app", "--app-dir", "app", "--host", "0.0.0.0", "--port", "8000"]

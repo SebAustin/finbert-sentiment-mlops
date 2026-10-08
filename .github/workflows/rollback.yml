@@ -1,0 +1,77 @@
+# Model rollback: re-points the MLflow "production" alias to the previous
+# registered version.
+#
+# Triggers
+#   * workflow_dispatch — manual rollback from the Actions tab.
+#   * workflow_run      — automatically when "test-and-deploy" fails because
+#                         its deepchecks (drift) job failed.
+#
+# Needs a repository secret MLFLOW_TRACKING_URI pointing at an MLflow server
+# reachable from GitHub runners. Without it the job is skipped with a notice
+# and the local gate (scripts/drift_gate.sh) is the rollback path.
+# See docs/ROLLBACK.md.
+
+name: model-rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Reason recorded on the rolled-back model version
+        required: true
+        default: manual rollback
+  workflow_run:
+    workflows: [test-and-deploy]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  rollback:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    env:
+      MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+      MODEL_NAME: finbert
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decide whether to roll back
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          if [[ -z "$MLFLOW_TRACKING_URI" ]]; then
+            echo "::notice::MLFLOW_TRACKING_URI secret not set — skipping. Use scripts/drift_gate.sh locally."
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          drift=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" \
+            --jq '.jobs[] | select(.name == "deepchecks") | .conclusion')
+          echo "deepchecks job conclusion: ${drift:-none}"
+          if [[ "$drift" == "failure" ]]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::CI failed for a reason other than drift — no rollback."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.decide.outputs.go == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Roll back production alias
+        if: steps.decide.outputs.go == 'true'
+        env:
+          REASON: ${{ github.event.inputs.reason || 'deepchecks drift gate failed in CI' }}
+        run: |
+          pip install "mlflow-skinny==2.16.2" "python-dotenv==1.0.1"
+          python scripts/rollback.py --reason "$REASON"

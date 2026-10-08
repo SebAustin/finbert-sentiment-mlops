@@ -1,33 +1,41 @@
-# TODO (Task 5)
-# Complete this CI/CD pipeline by implementing the following jobs:
-# 1. test          — install dependencies and run pytest tests/ with MODEL_SOURCE=huggingface
-# 2. deepchecks    — install dependencies and run scripts/run_deepchecks.py with MODEL_SOURCE=huggingface
-#                    Both jobs must run in parallel after lint (needs: lint)
-# 3. build-and-push — build the Docker image, tag it with the commit SHA, log in to Amazon ECR,
-#                    and push both the SHA and latest tags (needs: test, deepchecks)
-# 4. deploy        — render the ECS task definition with the new image and deploy to ECS Fargate
-# Documentation: https://docs.github.com/en/actions/writing-workflows
+# CI/CD for the FinBERT sentiment API.
+#
+#   lint ─┬─ test ───────┬─ build (ECR) ── deploy (ECS Fargate, "production" approval)
+#         └─ deepchecks ─┘
+#
+# Required repository secrets:
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN (Cloud Lab
+#   credentials are temporary), AWS_REGION, ECR_REGISTRY
+#   (<account>.dkr.ecr.<region>.amazonaws.com).
+# AWS resources are created by infra/setup_aws.sh (see infra/README.md).
+# Docs: https://docs.github.com/en/actions/writing-workflows
 
 name: test-and-deploy
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
-# TODO (Task 5)
-# Before running this pipeline, make sure you have created the following AWS resources:
-# 1. An ECR repository named finbert-api to store your Docker images
-# 2. An ECS cluster named finbert-cluster
-# 3. An ECS service named finbert-api-service running on that cluster
-# 4. An ECS task definition named finbert-api
-# Also add AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
-# AWS_REGION, and ECR_REGISTRY as GitHub repository secrets.
+permissions:
+  contents: read
+
+# Never run two deployments of main at the same time.
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   ECR_REPOSITORY: finbert-api
   TASK_DEFINITION: finbert-api
   CONTAINER_NAME: finbert-api
   ECS_SERVICE: finbert-api-service
-  ECS_CLUSTER: finbert-api
+  ECS_CLUSTER: finbert-cluster
+  PYTHON_VERSION: "3.12"
+  HF_MODEL_ID: baptle/FinBERT_market_based
+  HF_DATASET_ID: baptle/financial_headlines_market_based
+  # CPU-only PyTorch: the default wheel drags ~3 GB of CUDA libraries.
+  TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
 
 jobs:
   lint:
@@ -40,59 +48,164 @@ jobs:
       - run: pip install ruff
       - run: ruff check app/ scripts/ tests/
 
-  # TODO (Task 5) — test job
-  # Steps:
-  # - Checkout the code and setup Python (3.12)
-  # - Install dependencies
-  # - Run integration test using the HuggingFace model as MODEL_SOURCE
-  # Nice-to-have:
-  # - Cache pip dependencies to avoid re-installing on every run
-  # - Cache the HuggingFace model to avoid re-downloading on every run
   test:
     runs-on: ubuntu-latest
     needs: lint
+    timeout-minutes: 30
+    env:
+      MODEL_SOURCE: huggingface
     steps:
+      - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
 
-  # TODO (Task 5) — deepchecks job
-  # Steps:
-  # - Checkout the code and setup Python (3.12)
-  # - Install dependencies
-  # - Generate data by running dvc repro (set HF_DATASET_ID env var)
-  # - Run deepchecks script using the HugginFace model as MODEL_ENV
-  # Nice-to-have:
-  # - Cache pip dependencies to avoid re-installing on every run
-  # - Cache the HuggingFace model to avoid re-downloading on every run
+      - name: Cache HuggingFace model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-model-${{ env.HF_MODEL_ID }}-v1
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch==2.5.1 torchvision==0.20.1 --index-url "$TORCH_INDEX_URL"
+          pip install -r requirements.txt
+
+      - name: Download and patch the model
+        run: python scripts/smoke_test.py
+
+      - name: Run integration tests
+        run: pytest tests/ -v
+
   deepchecks:
     runs-on: ubuntu-latest
     needs: lint
+    timeout-minutes: 30
+    env:
+      MODEL_SOURCE: huggingface
     steps:
+      - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
 
-  # TODO (Task 5) — build job
-  # Steps:
-  # 1. Checkout the code
-  # 2. Configure AWS credentials using repository secrets
-  #    (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_REGION)
-  # 3. Log in to Amazon ECR
-  # 4. Build the Docker image
-  # 5. Tag it with a unique tag combining the short commit SHA and a timestamp
-  # 6. Push both the unique tag and the :latest tag to ECR
+      - name: Cache HuggingFace model and dataset
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface/hub
+            ~/.cache/huggingface/datasets
+          key: hf-model-data-${{ env.HF_MODEL_ID }}-${{ hashFiles('params.yaml') }}-v1
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch==2.5.1 torchvision==0.20.1 --index-url "$TORCH_INDEX_URL"
+          pip install -r requirements.txt
+
+      - name: Download and patch the model
+        run: python scripts/smoke_test.py
+
+      - name: Generate data with DVC
+        run: dvc repro
+
+      - name: Run Deepchecks drift gate
+        run: python scripts/run_deepchecks.py
+
   build:
     name: Build and Push to ECR
     runs-on: ubuntu-latest
     needs: [test, deepchecks]
+    timeout-minutes: 30
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
     steps:
+      - uses: actions/checkout@v4
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-  # TODO (Task 5) — deploy job
-  # Steps:
-  # 1. Configure AWS credentials (same secrets as build job)
-  # 2. Download the current ECS task definition using the AWS CLI
-  # 3. Render a new task definition revision with the updated image URI
-  # 4. Deploy the new task definition to the ECS service and wait for stability
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compute image tags
+        id: meta
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+        run: |
+          TAG="${GITHUB_SHA::7}-$(date -u +%Y%m%d%H%M%S)"
+          {
+            echo "tag=$TAG"
+            echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$TAG"
+            echo "latest=$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build the Docker image
+        run: |
+          docker build \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t "${{ steps.meta.outputs.image }}" \
+            -t "${{ steps.meta.outputs.latest }}" .
+
+      - name: Push the image to Amazon ECR
+        run: |
+          docker push "${{ steps.meta.outputs.image }}"
+          docker push "${{ steps.meta.outputs.latest }}"
+          echo "Pushed ${{ steps.meta.outputs.image }}" >> "$GITHUB_STEP_SUMMARY"
+
   deploy:
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 30
+    # Manual approval gate: add required reviewers to the "production"
+    # environment (Settings → Environments) so every deploy waits for sign-off.
+    environment:
+      name: production
     steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$TASK_DEFINITION" \
+            --query taskDefinition > task-definition.json
+
+      - name: Render task definition with the new image
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ needs.build.outputs.image }}
+
+      - name: Deploy to Amazon ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          desired-count: 1
+          wait-for-service-stability: true
+          wait-for-minutes: 20
+
+      - name: Summary
+        run: |
+          echo "Deployed ${{ needs.build.outputs.image }} to $ECS_CLUSTER/$ECS_SERVICE" >> "$GITHUB_STEP_SUMMARY"

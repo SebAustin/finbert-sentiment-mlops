@@ -1,0 +1,21 @@
+# Runtime-only dependencies for the production image (Dockerfile).
+# CPU-only PyTorch: the default PyPI wheel for linux/x86_64 pulls ~3 GB of
+# CUDA libraries the Fargate task can never use.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu ; platform_machine == "x86_64"
+torch==2.5.1 ; platform_machine != "x86_64"
+
+numpy>=1.26,<2.0
+transformers>=4.40.2,<4.46
+huggingface-hub>=0.23,<1.0
+
+# API
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+python-dotenv==1.0.1
+prometheus-client==0.20.0
+
+# MLflow model loading (MODEL_SOURCE=mlflow via docker-compose)
+mlflow-skinny==2.16.2
+pandas>=2.0.0,<2.3

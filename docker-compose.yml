@@ -1,24 +1,67 @@
-# TODO (Task 4)
-# Define a docker-compose.yml that runs the FastAPI service with:
-# 1. Build section that defines how to create the Docker image for the service
-# 2. Port mapping 8000:8000
-# 3. Pass environment variables using the .env file
-# 4. Volume mounts for mlruns/ and mlartifacts/ so the API can reach the registered model
-# 5. A healthcheck on GET /health
-# 6. extra_hosts mapping so the container can reach the MLflow server running on the host machine
-#    (required on Linux where host.docker.internal is not resolved automatically)
-# Documentation: https://docs.docker.com/compose/compose-file/
+# Local stack: FinBERT API + Prometheus + Grafana.
+#
+#   mlflow server --port 5000 --host 0.0.0.0 --allowed-hosts "*"   # on the host
+#   docker compose up --build
+#
+#   API         http://localhost:8000/docs
+#   Prometheus  http://localhost:9090   (target "finbert-api")
+#   Grafana     http://localhost:3000   (anonymous viewer; dashboard "FinBERT API")
+#
+# The API loads models:/${MODEL_NAME}@${MODEL_STAGE} from the MLflow server on
+# the host. Set MODEL_SOURCE=huggingface in .env to use the model baked into
+# the image instead.
 
 services:
 
   api:
-    build: 
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finbert-api:local
     ports:
-
+      - "8000:8000"
     env_file:
-      
+      - .env
+    environment:
+      # Inside the container the host's MLflow server is host.docker.internal,
+      # whatever URI the host-side scripts use in .env.
+      MLFLOW_TRACKING_URI: ${COMPOSE_MLFLOW_TRACKING_URI:-http://host.docker.internal:5000}
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
     volumes:
-
+      - ./mlruns:/app/mlruns
+      - ./mlartifacts:/app/mlartifacts
     extra_hosts:
-      
+      - "host.docker.internal:host-gateway"
     healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.53.2
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/finbert-api.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped

@@ -37,3 +37,6 @@ mlartifacts/
 .pytest_cache/
 .hf/
 locust_*.csv
+
+# Local editor tooling (installed by a shell hook)
+.cursor/

@@ -35,6 +35,16 @@ flowchart LR
 | CI/CD (run 37824933291) | lint ✓ · test ✓ · deepchecks ✓ · build → ECR `finbert-api:f325472-20261008190747` ✓ · approved deploy → `finbert-api:3` on `finbert-cluster`, task RUNNING / HEALTHY |
 | Live ECS check (2026-10-08) | `/health` → `{"status":"ok"}` · `/predict` 130 ms · `/predict/batch` OK · JSON logs in CloudWatch `/ecs/finbert-api` |
 
+## Screenshots
+
+These show the live ECS deployment, the GitHub Actions pipeline, the MLflow registry/evaluation/monitoring, and Grafana/Prometheus. Index: [docs/screenshots/](docs/screenshots/README.md).
+
+| GitHub Actions pipeline | Grafana dashboard |
+|---|---|
+| ![pipeline](docs/screenshots/04-github-actions-pipeline.png) | ![grafana](docs/screenshots/10-grafana-dashboard.png) |
+| **MLflow registry (`@production`)** | **Production monitoring in MLflow (ECS traffic)** |
+| ![registry](docs/screenshots/06-mlflow-registered-model-production-alias.png) | ![monitoring](docs/screenshots/09-mlflow-production-monitoring-metrics.png) |
+
 ## Project layout
 
 ```
